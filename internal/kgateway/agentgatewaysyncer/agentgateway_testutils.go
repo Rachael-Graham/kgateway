@@ -38,6 +38,7 @@ import (
 	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/translator/listener"
 	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/wellknown"
 	agwplugins "github.com/kgateway-dev/kgateway/v2/pkg/agentgateway/plugins"
+	"github.com/kgateway-dev/kgateway/v2/pkg/agentgateway/translator"
 	agwtranslator "github.com/kgateway-dev/kgateway/v2/pkg/agentgateway/translator"
 	"github.com/kgateway-dev/kgateway/v2/pkg/client/clientset/versioned/fake"
 	"github.com/kgateway-dev/kgateway/v2/pkg/pluginsdk"
@@ -699,14 +700,16 @@ func (tc TestCase) Run(
 	// Build Agw resources and addresses collections
 	agwResourcesCollection, _ := agentGwSyncer.buildAgwResources(gateways, refGrants, krtOpts)
 	_, agwBackendsCollection := agentGwSyncer.newAgwBackendCollection(agwCollections.Backends, krtOpts)
-	addressesCollection := agentGwSyncer.buildAddressCollections(krtOpts)
+	addressesCollection, policyCol := agentGwSyncer.buildAddressCollections(krtOpts)
 
 	// Wait for collections to sync
 	kubeclient.WaitForCacheSync("agw-resources", ctx.Done(), agwResourcesCollection.HasSynced)
 	kubeclient.WaitForCacheSync("addresses", ctx.Done(), addressesCollection.HasSynced)
+	backendsAndPolicies := krt.JoinCollection([]krt.Collection[translator.AgwResourceWithCustomName]{policyCol, agwBackendsCollection})
+	kubeclient.WaitForCacheSync("backends-and-policies", ctx.Done(), backendsAndPolicies.HasSynced)
 
 	// build final proxy xds result
-	agentGwSyncer.buildXDSCollection(agwResourcesCollection, agwBackendsCollection, addressesCollection, krtOpts)
+	agentGwSyncer.buildXDSCollection(agwResourcesCollection, backendsAndPolicies, addressesCollection, krtOpts)
 	kubeclient.WaitForCacheSync("xds", ctx.Done(), agentGwSyncer.xDS.HasSynced)
 
 	time.Sleep(500 * time.Millisecond) // Allow collections to populate

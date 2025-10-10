@@ -36,7 +36,7 @@ func AgwPolicyCollection(binds krt.Collection[ir.AgwResourcesForGateway], agwPlu
 		// Convert all plugins.AgwPolicy structs to api.Resource structs
 		fetchedPolicies := krt.Fetch(ctx, joinPolicies)
 		allResources := slices.Map(fetchedPolicies, func(policy plugins.AgwPolicy) *api.Resource {
-			return translator.ToAgwResource(translator.AgwPolicy{policy.Policy})
+			return translator.ToAgwResource(translator.AgwPolicy{Policy: policy.Policy})
 		})
 
 		return &ir.AgwResourcesForGateway{

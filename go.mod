@@ -669,3 +669,5 @@ tool (
 	sigs.k8s.io/controller-tools/cmd/controller-gen
 	sigs.k8s.io/kind
 )
+
+replace github.com/agentgateway/agentgateway => github.com/solo-io/agentgateway-enterprise v0.0.0-20251010150549-5822aee5f9e3

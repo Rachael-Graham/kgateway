@@ -158,17 +158,18 @@ func (s *Syncer) buildResourceCollections(krtopts krtutil.KrtOptions) {
 	// Create an agentgateway backend collection from the kgateway backend resources
 	_, agwBackends := s.newAgwBackendCollection(s.agwCollections.Backends, krtopts)
 
-	// Build address collections
-	addresses := s.buildAddressCollections(krtopts)
+	// Build address collections (note: we don't need servicePolicies here, they're handled in buildAgwResources)
+	addresses, servicePolicies := s.buildAddressCollections(krtopts)
 
+	backendsAndPolicies := krt.JoinCollection([]krt.Collection[translator.AgwResourceWithCustomName]{servicePolicies, agwBackends})
 	// Build XDS collection
-	s.buildXDSCollection(agwResources, agwBackends, addresses, krtopts)
+	s.buildXDSCollection(agwResources, backendsAndPolicies, addresses, krtopts)
 
 	// Build status reporting
 	s.buildStatusReporting(policyStatuses)
 
 	// Set up sync dependencies
-	s.setupSyncDependencies(gateways, agwResources, agwBackends, addresses)
+	s.setupSyncDependencies(gateways, agwResources, agwBackends, addresses, servicePolicies, backendsAndPolicies)
 }
 
 func (s *Syncer) buildGatewayCollection(
@@ -282,7 +283,7 @@ func (s *Syncer) buildListenerFromGateway(obj translator.GatewayListener) *agwir
 	l.Protocol = protocol
 	l.Tls = tlsConfig
 
-	resources := []*api.Resource{translator.ToAgwResource(translator.AgwListener{l})}
+	resources := []*api.Resource{translator.ToAgwResource(translator.AgwListener{Listener: l})}
 	return translator.ToResourcep(types.NamespacedName{
 		Namespace: obj.Parent.Namespace,
 		Name:      obj.Parent.Name,
@@ -396,7 +397,7 @@ func (s *Syncer) getProtocolAndTLSConfig(obj translator.GatewayListener) (api.Pr
 	}
 }
 
-func (s *Syncer) buildAddressCollections(krtopts krtutil.KrtOptions) krt.Collection[translator.AgwResourceWithCustomName] {
+func (s *Syncer) buildAddressCollections(krtopts krtutil.KrtOptions) (krt.Collection[translator.AgwResourceWithCustomName], krt.Collection[translator.AgwResourceWithCustomName]) {
 	// Build workload index
 	workloadIndex := index{
 		namespaces:      s.agwCollections.Namespaces,
@@ -406,7 +407,7 @@ func (s *Syncer) buildAddressCollections(krtopts krtutil.KrtOptions) krt.Collect
 	waypoints := workloadIndex.WaypointsCollection(s.agwCollections.Gateways, s.agwCollections.GatewayClasses, s.agwCollections.Pods, krtopts)
 
 	// Build service and workload collections
-	workloadServices := workloadIndex.ServicesCollection(
+	workloadServices, servicePolicies := workloadIndex.ServicesCollection(
 		s.agwCollections.Services,
 		nil,
 		waypoints,
@@ -459,7 +460,7 @@ func (s *Syncer) buildAddressCollections(krtopts krtutil.KrtOptions) krt.Collect
 			Name:    obj.AddressResourceName,
 			Version: obj.AddressVersion,
 		}
-	}, krtopts.ToOptions("XDSAddresses")...)
+	}, krtopts.ToOptions("XDSAddresses")...), servicePolicies
 }
 
 func (s *Syncer) buildXDSCollection(
@@ -680,17 +681,9 @@ func registerPolicyStatus(s *status.StatusCollections, statusCols map[schema.Gro
 	}
 }
 
-func (s *Syncer) setupSyncDependencies(gateways krt.Collection[translator.GatewayListener], agwResources krt.Collection[agwir.AgwResourcesForGateway], agwBackends krt.Collection[translator.AgwResourceWithCustomName], addresses krt.Collection[translator.AgwResourceWithCustomName]) {
-	s.waitForSync = []cache.InformerSynced{
-		s.agwCollections.HasSynced,
-		s.agwPlugins.HasSynced,
-		gateways.HasSynced,
-		// resources
-		agwResources.HasSynced,
-		agwBackends.HasSynced,
-		s.xDS.HasSynced,
-		// addresses
-		addresses.HasSynced,
+func (s *Syncer) setupSyncDependencies(gateways ...interface{ HasSynced() bool }) {
+	for _, g := range gateways {
+		s.waitForSync = append(s.waitForSync, g.HasSynced)
 	}
 }
 

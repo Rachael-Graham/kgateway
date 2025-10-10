@@ -40,8 +40,16 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	inf "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 
+	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/utils"
+	agwir "github.com/kgateway-dev/kgateway/v2/pkg/agentgateway/ir"
+	"github.com/kgateway-dev/kgateway/v2/pkg/agentgateway/translator"
 	"github.com/kgateway-dev/kgateway/v2/pkg/pluginsdk/krtutil"
 	"github.com/kgateway-dev/kgateway/v2/pkg/utils/kubeutils"
+)
+
+const (
+	// ServiceCustomPolicyAnnotation is the annotation key for custom policies on services
+	ServiceCustomPolicyAnnotation = "agentgateway.dev/token-exchange"
 )
 
 func (a *index) ServicesCollection(
@@ -51,7 +59,7 @@ func (a *index) ServicesCollection(
 	inferencePools krt.Collection[*inf.InferencePool],
 	namespaces krt.Collection[*corev1.Namespace],
 	krtopts krtutil.KrtOptions,
-) krt.Collection[ServiceInfo] {
+) (krt.Collection[ServiceInfo], krt.Collection[translator.AgwResourceWithCustomName]) {
 	servicesInfo := krt.NewCollection(services, a.serviceServiceBuilder(waypoints, namespaces),
 		krtopts.ToOptions("ServicesInfo")...)
 	//ServiceEntriesInfo := krt.NewManyCollection(serviceEntries, a.serviceEntryServiceBuilder(namespaces),
@@ -61,7 +69,54 @@ func (a *index) ServicesCollection(
 	//WorkloadServices := krt.JoinCollection([]krt.Collection[ServiceInfo]{ServicesInfo, ServiceEntriesInfo}, krtopts.ToOptions("WorkloadService")...)
 
 	WorkloadServices := krt.JoinCollection([]krt.Collection[ServiceInfo]{servicesInfo, inferencePoolsInfo}, krtopts.ToOptions("WorkloadService")...)
-	return WorkloadServices
+
+	// Build service annotation-based policies
+	servicePolicies := krt.NewManyCollection(servicesInfo, a.serviceAnnotationPolicyBuilder(), krtopts.ToOptions("ServicePolicies")...)
+
+	return WorkloadServices, servicePolicies
+}
+
+func (a *index) serviceAnnotationPolicyBuilder() krt.TransformationMulti[ServiceInfo, translator.AgwResourceWithCustomName] {
+	return func(ctx krt.HandlerContext, s ServiceInfo) []translator.AgwResourceWithCustomName {
+		var result []translator.AgwResourceWithCustomName
+
+		// Check if the service has the custom policy annotation
+		if policyValue, exists := s.Annotations[ServiceCustomPolicyAnnotation]; exists && policyValue != "" {
+			// Create a custom policy based on the annotation value
+			policy := &api.Policy{
+				Name: fmt.Sprintf("service-token-exchange-policy-%s", s.ResourceName()),
+				Target: &api.PolicyTarget{
+					Kind: &api.PolicyTarget_Service{
+						// Service: fmt.Sprintf("%s/%s:%s", "service", s.ResourceName(), policyValue),
+						Service: s.ResourceName(),
+					},
+				},
+				Spec: &api.PolicySpec{
+					// For this example, we'll create a simple JWT policy
+					// You can extend this to parse the annotation value and create different policy types
+					Kind: &api.PolicySpec_Auth{
+						Auth: &api.BackendAuthPolicy{
+							Kind: &api.BackendAuthPolicy_TokenExchange{
+								TokenExchange: &api.TokenExchange{},
+							},
+						},
+					},
+				},
+			}
+			resourceWrapper := &api.Resource{
+				Kind: &api.Resource_Policy{
+					Policy: policy,
+				},
+			}
+			result = append(result, translator.AgwResourceWithCustomName{
+				Message: resourceWrapper,
+				Name:    agwir.GetAgwResourceName(resourceWrapper),
+				Version: utils.HashProto(resourceWrapper),
+			})
+		}
+
+		return result
+	}
 }
 
 func (a *index) serviceServiceBuilder(
@@ -102,6 +157,7 @@ func (a *index) serviceServiceBuilder(
 			Service:       svc,
 			PortNames:     portNames,
 			LabelSelector: NewSelector(s.Spec.Selector),
+			Annotations:   s.Annotations,
 			Source:        MakeSource(s),
 			Waypoint:      waypointStatus,
 		})
@@ -728,7 +784,8 @@ type ServiceInfo struct {
 	MarshaledAddress *anypb.Any
 	// AsAddress contains a pre-created AddressInfo representation. This ensures we do not need repeated conversions on
 	// the hotpath
-	AsAddress AddressInfo
+	AsAddress   AddressInfo
+	Annotations map[string]string
 }
 
 func (i ServiceInfo) GetLabelSelector() map[string]string {
@@ -774,6 +831,7 @@ func (i ServiceInfo) Equals(other ServiceInfo) bool {
 	return equalUsingPremarshaled(i.Service, i.MarshaledAddress, other.Service, other.MarshaledAddress) &&
 		maps.Equal(i.LabelSelector.Labels, other.LabelSelector.Labels) &&
 		maps.Equal(i.PortNames, other.PortNames) &&
+		maps.Equal(i.Annotations, other.Annotations) &&
 		i.Source == other.Source
 }
 

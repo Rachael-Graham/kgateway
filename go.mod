@@ -670,4 +670,4 @@ tool (
 	sigs.k8s.io/kind
 )
 
-replace github.com/agentgateway/agentgateway => github.com/solo-io/agentgateway-enterprise v0.0.0-20251010150549-5822aee5f9e3
+replace github.com/agentgateway/agentgateway => github.com/solo-io/agentgateway-enterprise v0.0.0-20251013190656-da44b071f71e

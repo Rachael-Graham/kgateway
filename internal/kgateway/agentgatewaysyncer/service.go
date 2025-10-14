@@ -92,8 +92,6 @@ func (a *index) serviceAnnotationPolicyBuilder() krt.TransformationMulti[Service
 					},
 				},
 				Spec: &api.PolicySpec{
-					// For this example, we'll create a simple JWT policy
-					// You can extend this to parse the annotation value and create different policy types
 					Kind: &api.PolicySpec_Auth{
 						Auth: &api.BackendAuthPolicy{
 							Kind: &api.BackendAuthPolicy_TokenExchange{

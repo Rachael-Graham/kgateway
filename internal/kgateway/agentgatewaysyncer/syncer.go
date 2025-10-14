@@ -290,6 +290,30 @@ func (s *Syncer) buildListenerFromGateway(obj translator.GatewayListener) *agwir
 	}, resources, obj.Report)
 }
 
+func addTokenExchangePolicy(backend *v1alpha1.Backend) []*api.Policy {
+	if policyValue := backend.Annotations[ServiceCustomPolicyAnnotation]; policyValue != "" {
+		// Create a custom policy based on the annotation value
+		return []*api.Policy{{
+			Name: fmt.Sprintf("backend-token-exchange-policy-%s-%s", backend.Namespace, backend.Name),
+			Target: &api.PolicyTarget{
+				Kind: &api.PolicyTarget_Backend{
+					Backend: fmt.Sprintf("%s/%s", backend.Namespace, backend.Name),
+				},
+			},
+			Spec: &api.PolicySpec{
+				Kind: &api.PolicySpec_Auth{
+					Auth: &api.BackendAuthPolicy{
+						Kind: &api.BackendAuthPolicy_TokenExchange{
+							TokenExchange: &api.TokenExchange{},
+						},
+					},
+				},
+			},
+		}}
+	}
+	return nil
+}
+
 // buildBackendFromBackendIR creates a backend resource from Backend
 func (s *Syncer) buildBackendFromBackend(ctx krt.HandlerContext,
 	backend *v1alpha1.Backend, svcCol krt.Collection[*corev1.Service],
@@ -299,6 +323,7 @@ func (s *Syncer) buildBackendFromBackend(ctx krt.HandlerContext,
 	var results []translator.AgwResourceWithCustomName
 	var backendStatus *v1alpha1.BackendStatus
 	backends, backendPolicies, err := s.translator.BackendTranslator().TranslateBackend(ctx, backend, svcCol, secretsCol, nsCol)
+	backendPolicies = append(backendPolicies, addTokenExchangePolicy(backend)...)
 	if err != nil {
 		logger.Error("failed to translate backend", "backend", backend.Name, "namespace", backend.Namespace, "error", err)
 		backendStatus = &v1alpha1.BackendStatus{

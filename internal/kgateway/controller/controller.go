@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 
+	"istio.io/istio/pkg/kube/controllers"
 	"istio.io/istio/pkg/kube/krt"
 	"istio.io/istio/pkg/kube/kubetypes"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -30,10 +31,10 @@ import (
 	apiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	internaldeployer "github.com/kgateway-dev/kgateway/v2/internal/kgateway/deployer"
-	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/ir"
 	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/wellknown"
 	"github.com/kgateway-dev/kgateway/v2/pkg/deployer"
 	"github.com/kgateway-dev/kgateway/v2/pkg/pluginsdk/collections"
+	"github.com/kgateway-dev/kgateway/v2/pkg/pluginsdk/ir"
 )
 
 const (
@@ -338,9 +339,13 @@ func (c *controllerBuilder) watchGw(ctx context.Context) error {
 
 	// Trigger an event when the gateway changes. This can even be a change in listener sets attached to the gateway
 	c.cfg.CommonCollections.GatewayIndex.Gateways.Register(func(o krt.Event[ir.Gateway]) {
-		gw := o.Latest()
-		c.reconciler.customEvents <- event.TypedGenericEvent[ir.Gateway]{
-			Object: gw,
+		if gw := meaningfulChange(o); gw != nil {
+			log.V(6).Info("triggered change from IR")
+			c.reconciler.customEvents <- event.TypedGenericEvent[ir.Gateway]{
+				Object: *gw,
+			}
+		} else {
+			log.V(6).Info("skipped change from IR")
 		}
 	})
 	buildr.WatchesRawSource(
@@ -405,6 +410,26 @@ func (c *controllerBuilder) watchGw(ctx context.Context) error {
 		NeedLeaderElection: ptr.To(true),
 	})
 	return buildr.Complete(NewGatewayReconciler(ctx, c.cfg, d))
+}
+
+// meaningfulChange filters out changes to an ir.Gateway that are not relevant to the deployer.
+// This avoids expensive re-reconciling of the Gateway on each status update, which is a frequent operation due to the
+// attachedRoutes status.
+func meaningfulChange(ev krt.Event[ir.Gateway]) *ir.Gateway {
+	switch ev.Event {
+	case controllers.EventAdd:
+		return ev.New
+	case controllers.EventDelete:
+		return ev.Old
+	}
+	o, n := ev.Old, ev.New
+	meaningfulFieldsEqual := o.ObjectSource.Equals(n.ObjectSource) &&
+		o.Obj.GetGeneration() == n.Obj.GetGeneration() &&
+		deployer.NewGatewayIRForDeployer(o).Equals(deployer.NewGatewayIRForDeployer(n))
+	if !meaningfulFieldsEqual {
+		return n
+	}
+	return nil
 }
 
 func (c *controllerBuilder) addHTTPRouteIndexes(ctx context.Context) error {

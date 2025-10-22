@@ -13,7 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gwv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/ir"
 	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/krtcollections"
 	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/query"
 	route "github.com/kgateway-dev/kgateway/v2/internal/kgateway/translator/httproute"
@@ -23,6 +22,7 @@ import (
 	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/utils"
 	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/wellknown"
 	"github.com/kgateway-dev/kgateway/v2/pkg/logging"
+	"github.com/kgateway-dev/kgateway/v2/pkg/pluginsdk/ir"
 	reports "github.com/kgateway-dev/kgateway/v2/pkg/pluginsdk/reporter"
 )
 
@@ -845,6 +845,10 @@ func makeVhostName(
 }
 
 func GenerateListenerName(listener ir.Listener) string {
+	return GenerateListenerNameFromPort(listener.Port)
+}
+
+func GenerateListenerNameFromPort(port gwv1.PortNumber) string {
 	// Add a ~ to make sure the name won't collide with user provided names in other listeners
-	return fmt.Sprintf("listener~%d", listener.Port)
+	return fmt.Sprintf("listener~%d", port)
 }

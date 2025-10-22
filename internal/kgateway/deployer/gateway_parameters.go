@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 
 	"helm.sh/helm/v3/pkg/chart"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/utils/pointer"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	api "sigs.k8s.io/gateway-api/apis/v1"
@@ -56,8 +56,12 @@ func (gp *GatewayParameters) WithHelmValuesGeneratorOverride(generator deployer.
 	return gp
 }
 
-func LoadGatewayChart() (*chart.Chart, error) {
-	return loadChart(helm.KgatewayHelmChart)
+func LoadEnvoyChart() (*chart.Chart, error) {
+	return loadChart(helm.EnvoyHelmChart)
+}
+
+func LoadAgentgatewayChart() (*chart.Chart, error) {
+	return loadChart(helm.AgentgatewayHelmChart)
 }
 
 func GatewayGVKsToWatch(ctx context.Context, d *deployer.Deployer) ([]schema.GroupVersionKind, error) {
@@ -278,41 +282,47 @@ func (k *kGatewayParameters) getGatewayParametersForGatewayClass(ctx context.Con
 }
 
 func (k *kGatewayParameters) getValues(gw *api.Gateway, gwParam *v1alpha1.GatewayParameters) (*deployer.HelmConfig, error) {
+	var err error
 	irGW := deployer.GetGatewayIR(gw, k.inputs.CommonCollections)
-	ports := deployer.GetPortsValues(irGW, gwParam)
+	ports := deployer.GetPortsValues(deployer.NewGatewayIRForDeployer(irGW), gwParam)
 	if len(ports) == 0 {
 		return nil, ErrNoValidPorts
 	}
 
-	// construct the default values
-	vals := &deployer.HelmConfig{
-		Gateway: &deployer.HelmGateway{
-			Name:             &gw.Name,
-			GatewayName:      &gw.Name,
-			GatewayNamespace: &gw.Namespace,
-			GatewayClassName: ptr.To(string(gw.Spec.GatewayClassName)),
-			Ports:            ports,
-			Xds: &deployer.HelmXds{
-				// The xds host/port MUST map to the Service definition for the Control Plane
-				// This is the socket address that the Proxy will connect to on startup, to receive xds updates
-				Host: &k.inputs.ControlPlane.XdsHost,
-				Port: &k.inputs.ControlPlane.XdsPort,
-				Tls: &deployer.HelmXdsTls{
-					Enabled: ptr.To(k.inputs.ControlPlane.XdsTLS),
-					CaCert:  ptr.To(k.inputs.ControlPlane.XdsTlsCaPath),
-				},
-			},
-			AgwXds: &deployer.HelmXds{
-				// The agentgateway xds host/port MUST map to the Service definition for the Control Plane
-				// This is the socket address that the Proxy will connect to on startup, to receive xds updates
-				Host: &k.inputs.ControlPlane.XdsHost,
-				Port: &k.inputs.ControlPlane.AgwXdsPort,
-				Tls: &deployer.HelmXdsTls{
-					Enabled: ptr.To(k.inputs.ControlPlane.XdsTLS),
-					CaCert:  ptr.To(k.inputs.ControlPlane.XdsTlsCaPath),
-				},
+	gtw := &deployer.HelmGateway{
+		Name:             &gw.Name,
+		GatewayName:      &gw.Name,
+		GatewayNamespace: &gw.Namespace,
+		GatewayClassName: ptr.To(string(gw.Spec.GatewayClassName)),
+		Ports:            ports,
+		Xds: &deployer.HelmXds{
+			// The xds host/port MUST map to the Service definition for the Control Plane
+			// This is the socket address that the Proxy will connect to on startup, to receive xds updates
+			Host: &k.inputs.ControlPlane.XdsHost,
+			Port: &k.inputs.ControlPlane.XdsPort,
+			Tls: &deployer.HelmXdsTls{
+				Enabled: ptr.To(k.inputs.ControlPlane.XdsTLS),
+				CaCert:  ptr.To(k.inputs.ControlPlane.XdsTlsCaPath),
 			},
 		},
+		AgwXds: &deployer.HelmXds{
+			// The agentgateway xds host/port MUST map to the Service definition for the Control Plane
+			// This is the socket address that the Proxy will connect to on startup, to receive xds updates
+			Host: &k.inputs.ControlPlane.XdsHost,
+			Port: &k.inputs.ControlPlane.AgwXdsPort,
+			Tls: &deployer.HelmXdsTls{
+				Enabled: ptr.To(k.inputs.ControlPlane.XdsTLS),
+				CaCert:  ptr.To(k.inputs.ControlPlane.XdsTlsCaPath),
+			},
+		},
+	}
+	if i := gw.Spec.Infrastructure; i != nil {
+		gtw.GatewayAnnotations = translateInfraMeta(i.Annotations)
+		gtw.GatewayLabels = translateInfraMeta(i.Labels)
+	}
+	// construct the default values
+	vals := &deployer.HelmConfig{
+		Gateway: gtw,
 	}
 
 	// Inject xDS CA certificate into Helm values if TLS is enabled
@@ -352,13 +362,12 @@ func (k *kGatewayParameters) getValues(gw *api.Gateway, gwParam *v1alpha1.Gatewa
 	if aiExtensionConfig != nil && aiExtensionConfig.GetEnabled() != nil && *aiExtensionConfig.GetEnabled() {
 		slog.Warn("gatewayparameters spec.kube.aiExtension is deprecated in v2.1 and will be removed in v2.2. Use spec.kube.agentgateway instead.")
 	}
-	agwConfig := kubeProxyConfig.GetAgentgateway()
 
 	gateway := vals.Gateway
 
 	// deployment values
 	if deployConfig.GetReplicas() != nil {
-		gateway.ReplicaCount = pointer.Uint32(uint32(*deployConfig.GetReplicas())) // nolint:gosec // G115: kubebuilder validation ensures safe for uint32
+		gateway.ReplicaCount = ptr.To(uint32(*deployConfig.GetReplicas())) // nolint:gosec // G115: kubebuilder validation ensures safe for uint32
 	}
 	gateway.Strategy = deployConfig.GetStrategy()
 
@@ -382,24 +391,26 @@ func (k *kGatewayParameters) getValues(gw *api.Gateway, gwParam *v1alpha1.Gatewa
 	gateway.TopologySpreadConstraints = podConfig.GetTopologySpreadConstraints()
 	gateway.ExtraVolumes = podConfig.GetExtraVolumes()
 
-	// envoy container values
-	logLevel := envoyContainerConfig.GetBootstrap().GetLogLevel()
-	compLogLevels := envoyContainerConfig.GetBootstrap().GetComponentLogLevels()
-	gateway.LogLevel = logLevel
-	compLogLevelStr, err := deployer.ComponentLogLevelsToString(compLogLevels)
-	if err != nil {
-		return nil, err
-	}
-	gateway.ComponentLogLevel = &compLogLevelStr
-
-	agentgatewayEnabled := agwConfig.GetEnabled()
-	if agentgatewayEnabled != nil && *agentgatewayEnabled {
+	// data plane container
+	if agwConfig := kubeProxyConfig.GetAgentgateway(); ptr.Deref(agwConfig.GetEnabled(), false) {
+		gateway.DataPlaneType = deployer.DataPlaneAgentgateway
 		gateway.Resources = agwConfig.GetResources()
 		gateway.SecurityContext = agwConfig.GetSecurityContext()
 		gateway.Image = deployer.GetImageValues(agwConfig.GetImage())
 		gateway.Env = agwConfig.GetEnv()
 		gateway.ExtraVolumeMounts = agwConfig.ExtraVolumeMounts
+		gateway.LogLevel = agwConfig.GetLogLevel()
+		gateway.CustomConfigMapName = agwConfig.GetCustomConfigMapName()
 	} else {
+		gateway.DataPlaneType = deployer.DataPlaneEnvoy
+		logLevel := envoyContainerConfig.GetBootstrap().GetLogLevel()
+		gateway.LogLevel = logLevel
+		compLogLevels := envoyContainerConfig.GetBootstrap().GetComponentLogLevels()
+		compLogLevelStr, err := deployer.ComponentLogLevelsToString(compLogLevels)
+		if err != nil {
+			return nil, err
+		}
+		gateway.ComponentLogLevel = &compLogLevelStr
 		gateway.Resources = envoyContainerConfig.GetResources()
 		gateway.SecurityContext = envoyContainerConfig.GetSecurityContext()
 		gateway.Image = deployer.GetImageValues(envoyContainerConfig.GetImage())
@@ -414,13 +425,6 @@ func (k *kGatewayParameters) getValues(gw *api.Gateway, gwParam *v1alpha1.Gatewa
 
 	// ai values
 	gateway.AIExtension, err = deployer.GetAIExtensionValues(aiExtensionConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	// TODO(npolshak): Currently we are using the same chart for both data planes. Should revisit having a separate chart for agentgateway: https://github.com/kgateway-dev/kgateway/issues/11240
-	// agentgateway integration values
-	gateway.Agentgateway, err = deployer.GetAgentgatewayValues(agwConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -474,4 +478,15 @@ func getGatewayClassFromGateway(ctx context.Context, cli client.Client, gw *api.
 	}
 
 	return gwc, nil
+}
+
+func translateInfraMeta[K ~string, V ~string](meta map[K]V) map[string]string {
+	infra := make(map[string]string, len(meta))
+	for k, v := range meta {
+		if strings.HasPrefix(string(k), "gateway.networking.k8s.io/") {
+			continue // ignore this prefix to avoid conflicts
+		}
+		infra[string(k)] = string(v)
+	}
+	return infra
 }
